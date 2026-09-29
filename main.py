@@ -6,25 +6,25 @@ from torchvision import transforms
 from torchvision.datasets import MNIST
 import matplotlib.pyplot as plt
 
-EPOCHS = 20
+EPOCHS = 100
 BATCH_SIZE = 256
-GAMMA = 0.05  # Larger = stronger pressure to use fewer bits.
+GAMMA = 0.05  # Larger = stronger pressure to use fewer bits
 
-class QuantizedLinear(nn.Module):
+class QuantizedLinear(nn.Module): # Linear with no bias
     def __init__(self, inputs, outputs):
         super().__init__()
         self.weight = nn.Parameter(nn.init.kaiming_uniform_(torch.empty(outputs, inputs), a=5**0.5))
         self.bits   = nn.Parameter(torch.full((outputs, 1), 32.0))
 
-        scale = self.weight.detach().abs().amax(dim=1, keepdim=True) / 7
+        scale = self.weight.detach().abs().amax(dim=1, keepdim=True) / (2**31 - 1)  # 2 147 483 647
         self.exponent = nn.Parameter(scale.clamp_min(1e-12).log2())
 
     def forward(self, x):
-        # Each neuron shares one scale and bit budget across its weights.
+        # Each neuron shares one scale and bit budget across its weights
         scale = torch.exp2(self.exponent)
         limit = torch.exp2((self.bits.relu() - 1))
         codes = torch.clamp(self.weight / scale, min=-limit, max=limit - 1)
-        codes = codes + (codes.round() - codes).detach()  # Straight-through gradient.
+        codes = codes + (codes.round() - codes).detach()  # Straight-through gradient
         return F.linear(x, codes * scale)
 
     def estimateBits(self):
@@ -49,21 +49,22 @@ if __name__ == '__main__':
         {'params': [layer.weight for layer in layers], 'lr': 0.001},
         {'params': [param for layer in layers for param in (layer.bits, layer.exponent)], 'lr': 0.02, 'weight_decay': 0.0}])
 
-    for epoch in range(1, EPOCHS + 1):
-        # Training
-        model.train()
-        for batch, (x, y) in enumerate(train, start=1):
-            x, y = x.to(device), y.to(device)
-            
-            averageBitsCount = sum(layer.estimateBits() for layer in layers) / paramCount
-            compressionsLoss =  (GAMMA if epoch >= 2 else 0.0) * averageBitsCount
+    for epoch in range(EPOCHS + 1):
+        if epoch > 0: # Epoch 0 evaluates the initial model before any training
+            # Training
+            model.train()
+            for batch, (x, y) in enumerate(train, start=1):
+                x, y = x.to(device), y.to(device)
 
-            classificationLoss = F.cross_entropy(model(x), y)
-            loss = classificationLoss + compressionsLoss
+                averageBitsCount = sum(layer.estimateBits() for layer in layers) / paramCount
+                compressionsLoss = GAMMA * averageBitsCount
 
-            optimizer.zero_grad()
-            loss.backward()
-            optimizer.step()
+                classificationLoss = F.cross_entropy(model(x), y)
+                loss = classificationLoss + compressionsLoss
+
+                optimizer.zero_grad()
+                loss.backward()
+                optimizer.step()
 
         # Evaluation
         model.eval()
@@ -74,4 +75,4 @@ if __name__ == '__main__':
                 correct += (prediction == y.to(device)).sum().item()
             accuracy = 100 * correct / len(test.dataset)
             bits = sum(layer.estimateBits() for layer in layers).item()
-        print(f'Epoch {epoch:2d} | accuracy {accuracy:.2f}% | estimated bits {bits:9_.0f} | {100 * bits / baselineBits:6.2f}% of 32-bit weights')
+        print(f'Epoch {epoch:4d} | accuracy {accuracy:6.2f}% | estimated bits {bits:9_.0f} | {100 * bits / baselineBits:6.2f}% of 32-bit weights')
