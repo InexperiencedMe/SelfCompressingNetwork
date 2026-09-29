@@ -16,16 +16,18 @@ class QuantizedLinear(nn.Module): # Linear with no bias
         self.weight = nn.Parameter(nn.init.kaiming_uniform_(torch.empty(outputs, inputs), a=5**0.5))
         self.bits   = nn.Parameter(torch.full((outputs, 1), 32.0))
 
-        scale = self.weight.detach().abs().amax(dim=1, keepdim=True) / (2**31 - 1)  # 2 147 483 647
-        self.exponent = nn.Parameter(scale.clamp_min(1e-12).log2())
+        maxInt32 = 2**31 - 1 # 2 147 483 647
+        initialScale = self.weight.detach().abs().amax(dim=1, keepdim=True) / maxInt32
+        self.exponent = nn.Parameter(initialScale.clamp_min(1e-12).log2())
 
     def forward(self, x):
-        # Each neuron shares one scale and bit budget across its weights
-        scale = torch.exp2(self.exponent)
-        limit = torch.exp2((self.bits.relu() - 1))
-        codes = torch.clamp(self.weight / scale, min=-limit, max=limit - 1)
-        codes = codes + (codes.round() - codes).detach()  # Straight-through gradient
-        return F.linear(x, codes * scale)
+        stepSize = torch.exp2(self.exponent)
+        bound = torch.exp2((self.bits.relu() - 1))
+
+        slotValues = self.weight / stepSize
+        clippedSlotValues = torch.clamp(slotValues, min = -bound, max = bound - 1)
+        slotIntegers = clippedSlotValues + (clippedSlotValues.round() - clippedSlotValues).detach()  # Straight-Through Estimator
+        return F.linear(x, slotIntegers * stepSize)
 
     def estimateBits(self):
         return self.weight.shape[1] * self.bits.relu().sum()
