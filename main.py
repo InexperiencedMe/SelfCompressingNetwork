@@ -27,11 +27,11 @@ class QuantizedLinear(nn.Module):
         codes = codes + (codes.round() - codes).detach()  # Straight-through gradient.
         return F.linear(x, codes * scale)
 
-    def estimated_bits(self):
+    def estimateBits(self):
         return self.weight.shape[1] * self.bits.relu().sum()
 
 
-def main():
+if __name__ == '__main__':
     device = torch.accelerator.current_accelerator(check_available=True) or torch.device("cpu")
 
     transform = transforms.Compose([transforms.ToTensor(), transforms.Normalize((0.5,), (0.5,))])
@@ -40,14 +40,15 @@ def main():
 
     with torch.device(device):
         layers = [QuantizedLinear(784, 256), QuantizedLinear(256, 128), QuantizedLinear(128, 10)]
-        model = nn.Sequential(nn.Flatten(), layers[0], nn.ReLU(), layers[1], nn.ReLU(), layers[2]).to(device)
+        model = nn.Sequential(nn.Flatten(), layers[0], nn.ReLU(), layers[1], nn.ReLU(), layers[2])
+
     paramCount = sum(layer.weight.numel() for layer in layers)
     optimizer = torch.optim.AdamW([
         {'params': [layer.weight for layer in layers], 'lr': 0.001},
-        {'params': [p for layer in layers for p in (layer.bits, layer.exponent)], 'lr': 0.02}])
+        {'params': [param for layer in layers for param in (layer.bits, layer.exponent)], 'lr': 0.02}])
 
     accuracies, bitCounts = [], []
-    print(f'Device: {device} | Bits are estimates; tensors remain float32.')
+    print(f'Training on device: {device}')
     for epoch in range(1, EPOCHS + 1):
         # Training
         model.train()
@@ -56,7 +57,7 @@ def main():
             
             progress = epoch - 1 + batch / len(train) # First epoch: learn digits. Next two: ramp compression pressure
             gamma = GAMMA * min(1.0, max(0.0, (progress - 1) / 2))
-            averageBitsCount = sum(layer.estimated_bits() for layer in layers) / paramCount
+            averageBitsCount = sum(layer.estimateBits() for layer in layers) / paramCount
             compressionsLoss = gamma * averageBitsCount
 
             classificationLoss = F.cross_entropy(model(x), y)
@@ -74,23 +75,19 @@ def main():
                 prediction = model(x.to(device)).argmax(dim=1)
                 correct += (prediction == y.to(device)).sum().item()
             accuracy = 100 * correct / len(test.dataset)
-            bits = sum(layer.estimated_bits() for layer in layers).item()
+            bits = sum(layer.estimateBits() for layer in layers).item()
         accuracies.append(accuracy)
-        bitCounts.append(bits / 1000)
+        bitCounts.append(bits)
         print(f'Epoch {epoch:2d} | accuracy {accuracy:.2f}% | estimated bits {bits:,.0f}')
 
-    # 5. Display results. Nothing is saved to disk.
+    # Summary plot
     epochs = range(1, EPOCHS + 1)
     fig, (ax_accuracy, ax_bits) = plt.subplots(2, 1, sharex=True, figsize=(8, 6), layout='constrained')
     ax_accuracy.plot(epochs, accuracies, 'o-', color='tab:blue', markersize=3)
     ax_accuracy.set(ylabel='Test accuracy (%)', ylim=(95, 100), title='MNIST self-compression')
     ax_bits.plot(epochs, bitCounts, 'o-', color='tab:red', markersize=3)
-    ax_bits.set(xlabel='Epoch', ylabel='Estimated weight bits (kbit)', ylim=(0, None))
+    ax_bits.set(xlabel='Epoch', ylabel='Estimated weight bits (bit)', ylim=(0, None))
     for ax in (ax_accuracy, ax_bits):
         ax.grid(alpha=0.2)
         ax.spines[['top', 'right']].set_visible(False)
     plt.show()
-
-
-if __name__ == '__main__':
-    main()
