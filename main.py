@@ -29,7 +29,9 @@ class QuantizedLinear(nn.Module): # Linear with no bias
         return F.linear(x, slotIntegers * stepSize)
 
     def estimateBits(self):
-        return self.weight.shape[1] * self.bits.relu().sum()
+        weightBits = self.weight.shape[1] * self.bits.relu().sum()
+        exponentBits = self.exponent.numel() * self.exponent.element_size() * 8
+        return weightBits + exponentBits
 
 
 if __name__ == '__main__':
@@ -45,7 +47,8 @@ if __name__ == '__main__':
         model = nn.Sequential(nn.Flatten(), layers[0], nn.ReLU(), layers[1], nn.ReLU(), layers[2])
 
     paramCount = sum(layer.weight.numel() for layer in layers)
-    baselineBits = 32 * paramCount
+    with torch.no_grad():
+        baselineBits = sum(layer.estimateBits() for layer in layers).item()
     optimizer = torch.optim.AdamW([
         {'params': [layer.weight for layer in layers], 'lr': 0.001},
         {'params': [param for layer in layers for param in (layer.bits, layer.exponent)], 'lr': 0.02}])
@@ -76,4 +79,4 @@ if __name__ == '__main__':
                 correct += (prediction == y.to(device)).sum().item()
             accuracy = 100 * correct / len(test.dataset)
             bits = sum(layer.estimateBits() for layer in layers).item()
-        print(f'Epoch {epoch:4d} | accuracy {accuracy:6.2f}% | estimated bits {bits:9_.0f} | {100 * bits / baselineBits:6.2f}% of 32-bit weights')
+        print(f'Epoch {epoch:4d} | accuracy {accuracy:6.2f}% | estimated bits {bits:9_.0f} | {100 * bits / baselineBits:6.2f}% of initial model')
