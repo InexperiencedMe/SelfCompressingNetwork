@@ -4,9 +4,8 @@ from torch.nn import functional as F
 from torch.utils.data import DataLoader
 from torchvision import transforms
 from torchvision.datasets import MNIST
-import matplotlib.pyplot as plt
 
-EPOCHS = 100
+EPOCHS = 200
 BATCH_SIZE = 256
 GAMMA = 0.05  # Larger = stronger pressure to use fewer bits
 
@@ -17,8 +16,8 @@ class QuantizedLinear(nn.Module): # Linear with no bias
         self.bits   = nn.Parameter(torch.full((outputs, 1), 32.0))
 
         maxInt32 = 2**31 - 1 # 2 147 483 647
-        initialScale = self.weight.detach().abs().amax(dim=1, keepdim=True) / maxInt32
-        self.exponent = nn.Parameter(initialScale.clamp_min(1e-12).log2())
+        initialStepSize = self.weight.detach().abs().amax(dim=1, keepdim=True) / maxInt32
+        self.exponent = nn.Parameter(initialStepSize.clamp_min(1e-12).log2())
 
     def forward(self, x):
         stepSize = torch.exp2(self.exponent)
@@ -49,7 +48,7 @@ if __name__ == '__main__':
     baselineBits = 32 * paramCount
     optimizer = torch.optim.AdamW([
         {'params': [layer.weight for layer in layers], 'lr': 0.001},
-        {'params': [param for layer in layers for param in (layer.bits, layer.exponent)], 'lr': 0.02, 'weight_decay': 0.0}])
+        {'params': [param for layer in layers for param in (layer.bits, layer.exponent)], 'lr': 0.02}])
 
     for epoch in range(EPOCHS + 1):
         if epoch > 0: # Epoch 0 evaluates the initial model before any training
